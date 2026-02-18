@@ -228,6 +228,16 @@ ui <- page_fillable(
                   uiOutput("commit_status_ui")
                 )
               ),
+              fluidRow(
+                column(
+                  6,
+                  actionButton("reset_session", "Reset session annotations", class = "btn-outline-danger")
+                ),
+                column(
+                  6,
+                  uiOutput("reset_status_ui")
+                )
+              ),
               helpText("LHS: click to add AOI centre. Double-click to delete the nearest AOI centre."),
               tags$hr(),
               tags$h5("Debug: AOIs for current face (deldir tibble)"),
@@ -530,6 +540,14 @@ server <- function(input, output, session) {
     tags$div(class = cls, txt)
   })
 
+  output$reset_status_ui <- renderUI({
+    n_rows <- 0L
+    if (is.data.frame(session_ann$all)) n_rows <- nrow(session_ann$all)
+    cls <- if (n_rows == 0L) "alert alert-secondary" else "alert alert-info"
+    txt <- paste0("Session rows: ", n_rows)
+    tags$div(class = cls, txt)
+  })
+
   # ---- Compute + store deldir each time deldir tibble changes ----------
   observeEvent(list(deldir_tibble(), face_img(), current_dd_key()), {
     key <- current_dd_key()
@@ -622,7 +640,6 @@ server <- function(input, output, session) {
       dplyr::select(id, x, y) |>
       tibble::as_tibble()
 
-    # Assign each fixation to nearest centre (Voronoi equivalence)
     assign_one <- function(px, py, centres) {
       d2 <- (centres$x - px)^2 + (centres$y - py)^2
       centres$id[which.min(d2)]
@@ -669,7 +686,6 @@ server <- function(input, output, session) {
       return()
     }
 
-    # attach AOI metadata (aoi_id / aoi_name) by matching AOI_ASSIGNED to deldir_id
     pts <- deldir_tibble() |>
       dplyr::select(aoi_id, aoi_name, deldir_id) |>
       dplyr::distinct(deldir_id, .keep_all = TRUE)
@@ -682,11 +698,17 @@ server <- function(input, output, session) {
       ) |>
       dplyr::select(-aoi_id, -aoi_name)
 
-    # append to session-level table
     session_ann$all <- dplyr::bind_rows(session_ann$all, x2)
     session_ann$committed[[key]] <- TRUE
 
     showNotification("Committed this face to the session table. Upload the next face to continue.", type = "message", duration = 2.5)
+  })
+
+  # ---- Reset session annotations (Step 5) ------------------------------
+  observeEvent(input$reset_session, {
+    session_ann$all <- tibble::tibble()
+    session_ann$committed <- list()
+    showNotification("Session annotations cleared.", type = "message", duration = 2)
   })
 
   assigned_fixations_current <- reactive({
@@ -729,6 +751,27 @@ server <- function(input, output, session) {
     )
   })
 
+  # ---- Summary tab (Step 4) -------------------------------------------
+
+  output$fixations_summary <- renderTable({
+    x <- session_ann$all
+    if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) return(NULL)
+
+    x |>
+      dplyr::mutate(
+        AOI_LABEL = dplyr::if_else(!is.na(.data$AOI_NAME) & nzchar(.data$AOI_NAME),
+                                   .data$AOI_NAME,
+                                   .data$AOI_ID)
+      ) |>
+      dplyr::group_by(.data$SUBJECT, .data$FACE, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
+      dplyr::summarise(
+        N_FIX = dplyr::n(),
+        SUM_FIX_DUR = sum(.data$FIX_DUR, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      dplyr::arrange(.data$SUBJECT, .data$FACE, .data$AOI_LABEL)
+  })
+
   # ---- LHS plot --------------------------------------------------------
 
   output$face_for_edit <- renderPlot({
@@ -759,7 +802,6 @@ server <- function(input, output, session) {
       panel_h_px = session$clientData$output_face_for_markup_height
     )
 
-    # fixations first
     if (isTRUE(input$show_fixations)) {
 
       req(fixrep_this_face_mapped())
@@ -776,7 +818,6 @@ server <- function(input, output, session) {
       }
     }
 
-    # tessellation ON TOP of fixations
     dd_obj <- current_deldir_result()
     if (!is.null(dd_obj) && is.list(dd_obj) && !is.null(dd_obj$res)) {
       segs <- dd_obj$res$dirsgs
