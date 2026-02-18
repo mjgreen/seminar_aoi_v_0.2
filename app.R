@@ -224,43 +224,23 @@ ui <- page_fillable(
                 placeholder = "e.g., left_eye"
               ),
               fluidRow(
-                column(
-                  6,
-                  actionButton("finalize_aois", "Finalize AOIs for this face", class = "btn-primary")
-                ),
-                column(
-                  6,
-                  uiOutput("finalize_status_ui")
-                )
+                column(6, actionButton("finalize_aois", "Finalize AOIs for this face", class = "btn-primary")),
+                column(6, uiOutput("finalize_status_ui"))
               ),
               fluidRow(
-                column(
-                  6,
-                  actionButton("commit_next_face", "Next face (commit this face)", class = "btn-success")
-                ),
-                column(
-                  6,
-                  uiOutput("commit_status_ui")
-                )
+                column(6, actionButton("commit_next_face", "Next face (commit this face)", class = "btn-success")),
+                column(6, uiOutput("commit_status_ui"))
               ),
               fluidRow(
-                column(
-                  6,
-                  actionButton("reset_session", "Reset session annotations", class = "btn-outline-danger")
-                ),
-                column(
-                  6,
-                  uiOutput("reset_status_ui")
-                )
+                column(6, actionButton("reset_session", "Reset session annotations", class = "btn-outline-danger")),
+                column(6, uiOutput("reset_status_ui"))
               ),
               helpText("LHS: click to add AOI centre. Double-click to delete the nearest AOI centre."),
               tags$hr(),
               tags$h5("Debug: AOIs for current face (deldir tibble)"),
               tableOutput("aoi_debug_tbl")
             )
-          ),
-          tags$hr(),
-          actionButton("exit_app", "Exit app", class = "btn-danger")
+          )
         )
       )
     ),
@@ -291,15 +271,21 @@ ui <- page_fillable(
       ),
 
       nav_panel(
-        "Fixations annotated",
+        "Fixations annotated (current face)",
         card_body(
-          DT::DTOutput("fixations_tbl"),
-          tags$hr(),
-          tags$h5("Debug: Fixations assigned (current face)"),
           tableOutput("fix_assign_debug_tbl")
         )
       ),
+
+      nav_panel(
+        "Fixations annotated (all faces so far)",
+        card_body(
+          DT::DTOutput("fixations_tbl")
+        )
+      ),
+
       nav_panel("Summary", card_body(tableOutput("fixations_summary"))),
+
       nav_panel(
         "Downloads",
         card_body(
@@ -504,7 +490,6 @@ server <- function(input, output, session) {
       y >= 0 && y <= img$height
   }
 
-  # NOTE: change requested — round x/y to integer in the deldir tibble
   deldir_tibble <- reactive({
     req(current_face_key())
     subj <- current_subject()
@@ -512,16 +497,13 @@ server <- function(input, output, session) {
       dplyr::filter(.data$face_key == current_face_key(),
                     is.na(subj) | .data$subject == subj) |>
       dplyr::select(subject, face_key, aoi_id, aoi_name, deldir_id, x, y) |>
-      dplyr::mutate(
-        x = round(.data$x, 0),
-        y = round(.data$y, 0)
-      ) |>
       tibble::as_tibble()
   })
 
+  # Display as integers (digits=0) but keep underlying numeric values
   output$aoi_debug_tbl <- renderTable({
     req(current_face_key())
-    format_table_int(deldir_tibble())
+    deldir_tibble()
   }, digits = 0)
 
   next_aoi_id_for <- function(subject, face_key) {
@@ -745,11 +727,12 @@ server <- function(input, output, session) {
     assign$store[[key]]
   })
 
+  # Display as integers (digits=0) but keep underlying numeric values
   output$fix_assign_debug_tbl <- renderTable({
     x <- assigned_fixations_current()
     if (is.null(x)) return(NULL)
-    format_table_int(head(x, 50))
-  })
+    head(x, 50)
+  }, digits = 0)
 
   output$download_fix_assign_current <- downloadHandler(
     filename = function() {
@@ -766,7 +749,7 @@ server <- function(input, output, session) {
     }
   )
 
-  # ---- Fixations annotated tab: session table --------------------------
+  # ---- Fixations annotated (all faces so far): DT table -----------------
 
   output$fixations_tbl <- DT::renderDT({
     if (!requireNamespace("DT", quietly = TRUE)) return(NULL)
@@ -806,11 +789,12 @@ server <- function(input, output, session) {
       dplyr::arrange(.data$SUBJECT, .data$FACE, .data$AOI_LABEL)
   })
 
+  # Display as integers (digits=0) but keep underlying numeric values
   output$fixations_summary <- renderTable({
     x <- summary_tbl()
     if (nrow(x) == 0) return(NULL)
-    format_table_int(x)
-  })
+    x
+  }, digits = 0)
 
   # ---- Downloads tab ---------------------------------------------------
 
@@ -967,14 +951,6 @@ server <- function(input, output, session) {
 
     aois$centres <- aois$centres |>
       dplyr::filter(!(subject == delete_subject & face_key == delete_face & aoi_id == delete_id))
-  })
-
-  observeEvent(input$exit_app, {
-    if (interactive()) {
-      shiny::stopApp()
-    } else {
-      session$close()
-    }
   })
 }
 
