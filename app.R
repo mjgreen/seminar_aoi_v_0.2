@@ -203,7 +203,12 @@ ui <- page_fillable(
               ),
               uiOutput("fixations_showhide_ui"),
               tags$hr(),
-              helpText("LHS: click to add AOI centre. Double-click to delete nearest AOI centre.")
+              textInput(
+                inputId = "aoi_name_next",
+                label = "AOI name (optional, applies to the next click)",
+                placeholder = "e.g., left_eye"
+              ),
+              helpText("LHS: click to add AOI centre (uses the optional name above). Double-click to delete the nearest AOI centre.")
             )
           ),
           tags$hr(),
@@ -247,7 +252,13 @@ server <- function(input, output, session) {
 
   # ---- AOI centre state ------------------------------------------------
   aois <- reactiveValues(
-    centres = tibble::tibble(face_key = character(), aoi_id = integer(), x = numeric(), y = numeric())
+    centres = tibble::tibble(
+      face_key = character(),
+      aoi_id = integer(),
+      aoi_name = character(),
+      x = numeric(),
+      y = numeric()
+    )
   )
   next_aoi_id <- reactiveVal(1)
 
@@ -411,7 +422,8 @@ server <- function(input, output, session) {
     pts <- aois_this_face()
     if (nrow(pts) > 0) {
       points(pts$x, pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
-      text(pts$x, pts$y, labels = pts$aoi_id, pos = 3, cex = 0.9, col = "cyan")
+      lbl <- ifelse(is.na(pts$aoi_name) | pts$aoi_name == "", as.character(pts$aoi_id), pts$aoi_name)
+      text(pts$x, pts$y, labels = lbl, pos = 3, cex = 0.9, col = "cyan")
     }
   })
 
@@ -443,7 +455,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # ---- LHS click: add centre ------------------------------------------
+  # ---- LHS click: add centre (with optional name) ----------------------
 
   observeEvent(input$face_for_edit_click, {
     req(face_img(), current_face_key())
@@ -456,13 +468,20 @@ server <- function(input, output, session) {
     x <- input$face_for_edit_click$x
     y <- input$face_for_edit_click$y
 
+    nm <- input$aoi_name_next
+    nm <- if (is.null(nm)) "" else trimws(as.character(nm))
+    if (!nzchar(nm)) nm <- NA_character_
+
     id <- next_aoi_id()
     next_aoi_id(id + 1)
 
     aois$centres <- dplyr::bind_rows(
       aois$centres,
-      tibble::tibble(face_key = current_face_key(), aoi_id = id, x = x, y = y)
+      tibble::tibble(face_key = current_face_key(), aoi_id = id, aoi_name = nm, x = x, y = y)
     )
+
+    # clear after use so it applies to "the AOI they just clicked"
+    updateTextInput(session, "aoi_name_next", value = "")
   })
 
   # ---- LHS double-click: remove nearest centre (no threshold) ----------
