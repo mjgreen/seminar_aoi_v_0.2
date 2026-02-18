@@ -201,7 +201,16 @@ ui <- page_fillable(
                 "Upload face image",
                 accept = c(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp")
               ),
-              uiOutput("fixations_showhide_ui")
+              uiOutput("fixations_showhide_ui"),
+              tags$hr(),
+              radioButtons(
+                inputId = "lhs_mode",
+                label = "LHS mode",
+                choices = c("Navigate (brush-zoom)" = "nav", "Edit AOIs (click/dblclick)" = "edit"),
+                selected = "nav",
+                inline = FALSE
+              ),
+              helpText("Navigate mode: use brush to zoom (and double-click plot to reset). Edit mode: click to add an AOI point; double-click to delete nearest point.")
             )
           ),
           tags$hr(),
@@ -244,6 +253,11 @@ ui <- page_fillable(
 
 server <- function(input, output, session) {
 
+  # ---- AOI state (point AOIs for now) ---------------------------------
+  aois <- reactiveValues(points = tibble::tibble(face_key = character(), aoi_id = integer(), x = numeric(), y = numeric()))
+
+  next_aoi_id <- reactiveVal(1)
+
   fixrep_raw <- reactive({
     req(input$upload_fixrep)
     read_fixrep(input$upload_fixrep$datapath)
@@ -270,182 +284,4 @@ server <- function(input, output, session) {
         "map_face", "FACE", choices = cols,
         selected = dplyr::case_when(
           "which_face" %in% cols ~ "which_face",
-          "file_b1"    %in% cols ~ "file_b1",
-          TRUE ~ cols[1]
-        )
-      ),
-      selectInput("map_trial", "TRIAL", choices = cols,
-                  selected = if ("TRIAL_INDEX" %in% cols) "TRIAL_INDEX" else cols[1]),
-      selectInput("map_condition", "CONDITION", choices = cols,
-                  selected = if ("condition" %in% cols) "condition" else cols[1]),
-      selectInput("map_fix_x", "FIXATION X", choices = cols,
-                  selected = if ("CURRENT_FIX_X" %in% cols) "CURRENT_FIX_X" else cols[1]),
-      selectInput("map_fix_y", "FIXATION Y", choices = cols,
-                  selected = if ("CURRENT_FIX_Y" %in% cols) "CURRENT_FIX_Y" else cols[1]),
-      selectInput("map_fix_dur", "FIXATION DURATION", choices = cols,
-                  selected = if ("CURRENT_FIX_DURATION" %in% cols) "CURRENT_FIX_DURATION" else cols[1]),
-      selectInput("map_img_x", "IMAGE X", choices = cols,
-                  selected = if ("image_location_x" %in% cols) "image_location_x" else cols[1]),
-      selectInput("map_img_y", "IMAGE Y", choices = cols,
-                  selected = if ("image_location_y" %in% cols) "image_location_y" else cols[1])
-    )
-  })
-
-  fixrep <- reactive({
-    req(
-      fixrep_raw(),
-      input$map_participant, input$map_face, input$map_trial, input$map_condition,
-      input$map_fix_x, input$map_fix_y, input$map_fix_dur,
-      input$map_img_x, input$map_img_y
-    )
-
-    raw <- fixrep_raw()
-
-    tibble(
-      SUBJECT = raw[[input$map_participant]],
-      FACE = as.character(raw[[input$map_face]]),
-      TRIAL_ID = raw[[input$map_trial]],
-      CONDITION = raw[[input$map_condition]],
-      IMG_X = suppressWarnings(as.numeric(raw[[input$map_img_x]])),
-      IMG_Y = suppressWarnings(as.numeric(raw[[input$map_img_y]])),
-      FIX_X = suppressWarnings(as.numeric(raw[[input$map_fix_x]])),
-      FIX_Y = suppressWarnings(as.numeric(raw[[input$map_fix_y]])),
-      FIX_DUR = suppressWarnings(as.numeric(raw[[input$map_fix_dur]])),
-      AOI = "Not assigned"
-    )
-  })
-
-  output$fixrep_preview <- renderTable({
-    head(fixrep(), 5)
-  })
-
-  output$fixations_showhide_ui <- renderUI({
-    checkboxInput(
-      inputId = "show_fixations",
-      label = "Show fixations",
-      value = TRUE
-    )
-  })
-
-  face_ready <- reactive({
-    !is.null(input$upload_face) && nzchar(input$upload_face$datapath)
-  })
-
-  face_img <- reactive({
-    req(face_ready())
-    read_image_native(input$upload_face$datapath)
-  })
-
-  current_face_key <- reactive({
-    req(input$upload_face)
-    nm <- input$upload_face$name
-    nm <- basename(nm)
-    tolower(trimws(nm))
-  })
-
-  fixrep_this_face <- reactive({
-    req(fixrep(), current_face_key())
-
-    fx <- fixrep()
-    face_col <- tolower(trimws(basename(as.character(fx$FACE))))
-    fx[face_col == current_face_key(), , drop = FALSE]
-  })
-
-  fixrep_this_face_mapped <- reactive({
-    req(fixrep_this_face(), face_img())
-
-    fx <- fixrep_this_face()
-    w <- face_img()$width
-    h <- face_img()$height
-
-    img_left <- fx$IMG_X - (w / 2)
-    img_top  <- fx$IMG_Y - (h / 2)
-
-    fx$FIX_X_IMG <- fx$FIX_X - img_left
-    fx$FIX_Y_IMG <- fx$FIX_Y - img_top
-
-    fx
-  })
-
-  output$face_for_edit <- renderPlot({
-    req(face_img())
-    plot_native_image_fit(
-      face_img(),
-      panel_w_px = session$clientData$output_face_for_edit_width,
-      panel_h_px = session$clientData$output_face_for_edit_height
-    )
-  })
-
-  output$face_for_markup <- renderPlot({
-    req(face_img())
-
-    plot_native_image_fit(
-      face_img(),
-      panel_w_px = session$clientData$output_face_for_markup_width,
-      panel_h_px = session$clientData$output_face_for_markup_height
-    )
-
-    if (isTRUE(input$show_fixations)) {
-
-      req(fixrep_this_face_mapped())
-
-      w <- face_img()$width
-      h <- face_img()$height
-
-      fx <- fixrep_this_face_mapped()$FIX_X_IMG
-      fy <- fixrep_this_face_mapped()$FIX_Y_IMG
-
-      ok <- is.finite(fx) & is.finite(fy) & fx >= 0 & fx <= w & fy >= 0 & fy <= h
-      if (any(ok)) {
-        points(fx[ok], fy[ok], pch = 21, cex = 2, bg = "yellow", col = "red", lwd = 4)
-      }
-    }
-  })
-
-  click_on_image <- function(click, img) {
-    if (is.null(click) || is.null(img)) return(FALSE)
-    x <- click$x
-    y <- click$y
-    is.finite(x) && is.finite(y) &&
-      x >= 0 && x <= img$width &&
-      y >= 0 && y <= img$height
-  }
-
-  observeEvent(input$face_for_edit_click, {
-    req(face_img())
-
-    if (!click_on_image(input$face_for_edit_click, face_img())) {
-      showNotification("Click on the image (not the padding).", type = "message", duration = 1.5)
-      return()
-    }
-
-    x <- input$face_for_edit_click$x
-    y <- input$face_for_edit_click$y
-
-    # Your AOI-click logic goes here
-  })
-
-  observeEvent(input$face_for_edit_dblclick, {
-    req(face_img())
-
-    if (!click_on_image(input$face_for_edit_dblclick, face_img())) {
-      showNotification("Double-click on the image (not the padding).", type = "message", duration = 1.5)
-      return()
-    }
-
-    x <- input$face_for_edit_dblclick$x
-    y <- input$face_for_edit_dblclick$y
-
-    # Your AOI-doubleclick logic goes here
-  })
-
-  observeEvent(input$exit_app, {
-    if (interactive()) {
-      shiny::stopApp()
-    } else {
-      session$close()
-    }
-  })
-}
-
-shinyApp(ui, server)
+          "file_b1"    %in%_
