@@ -504,6 +504,7 @@ server <- function(input, output, session) {
       y >= 0 && y <= img$height
   }
 
+  # NOTE: change requested — round x/y to integer in the deldir tibble
   deldir_tibble <- reactive({
     req(current_face_key())
     subj <- current_subject()
@@ -511,13 +512,17 @@ server <- function(input, output, session) {
       dplyr::filter(.data$face_key == current_face_key(),
                     is.na(subj) | .data$subject == subj) |>
       dplyr::select(subject, face_key, aoi_id, aoi_name, deldir_id, x, y) |>
+      dplyr::mutate(
+        x = round(.data$x, 0),
+        y = round(.data$y, 0)
+      ) |>
       tibble::as_tibble()
   })
 
   output$aoi_debug_tbl <- renderTable({
     req(current_face_key())
     format_table_int(deldir_tibble())
-  })
+  }, digits = 0)
 
   next_aoi_id_for <- function(subject, face_key) {
     if (is.na(subject) || !nzchar(subject)) subject <- "UNKNOWN_SUBJECT"
