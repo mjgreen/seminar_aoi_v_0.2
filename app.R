@@ -210,7 +210,7 @@ ui <- page_fillable(
               ),
               helpText("LHS: click to add AOI centre (uses the optional name above). Double-click to delete the nearest AOI centre."),
               tags$hr(),
-              tags$h5("Debug: AOIs for current face"),
+              tags$h5("Debug: AOIs for current face (deldir tibble)"),
               tableOutput("aoi_debug_tbl")
             )
           ),
@@ -269,6 +269,11 @@ server <- function(input, output, session) {
 
   # per-(subject,face) integer counter used to generate aoi_id like "AOI_001"
   aoi_seq <- reactiveValues(n = tibble::tibble(subject = character(), face_key = character(), next_n = integer()))
+
+  # ---- deldir storage (keyed by subject|face_key) -----------------------
+  dd <- reactiveValues(
+    store = list() # each element: list(input_pts = tibble, res = deldir_object)
+  )
 
   # ---- Fixation report -------------------------------------------------
 
@@ -385,6 +390,14 @@ server <- function(input, output, session) {
     as.character(subj[1])
   })
 
+  # key for deldir store
+  current_dd_key <- reactive({
+    req(current_face_key())
+    subj <- current_subject()
+    if (is.na(subj) || !nzchar(subj)) subj <- "UNKNOWN_SUBJECT"
+    paste0(subj, "|", current_face_key())
+  })
+
   # ---- Fixations for this face ----------------------------------------
 
   fixrep_this_face <- reactive({
@@ -422,8 +435,8 @@ server <- function(input, output, session) {
       y >= 0 && y <= img$height
   }
 
-  # Current-face AOI tibble (this is the record you asked for)
-  aoi_current_face_tbl <- reactive({
+  # deldir tibble (your term): AOIs for current face/subject
+  deldir_tibble <- reactive({
     req(current_face_key())
     subj <- current_subject()
     aois$centres |>
@@ -435,7 +448,7 @@ server <- function(input, output, session) {
 
   output$aoi_debug_tbl <- renderTable({
     req(current_face_key())
-    aoi_current_face_tbl()
+    deldir_tibble()
   })
 
   # Get (and increment) the next AOI sequence number for this (subject, face_key)
@@ -458,6 +471,67 @@ server <- function(input, output, session) {
     sprintf("AOI_%03d", n_now)
   }
 
+  # ---- Compute + store deldir each time deldir tibble changes ----------
+  observeEvent(list(deldir_tibble(), face_img(), current_dd_key()), {
+    key <- current_dd_key()
+
+    # If deldir isn't installed, store NULL and do nothing else
+    if (!requireNamespace("deldir", quietly = TRUE)) {
+      dd$store[[key]] <- NULL
+      return()
+    }
+
+    pts <- deldir_tibble()
+
+    # Only need 2+ AOIs per your rule
+    if (nrow(pts) < 2) {
+      dd$store[[key]] <- NULL
+      return()
+    }
+
+    # Prepare input pts for deldir: x/y numeric + id = deldir_id
+    in_pts <- pts |>
+      dplyr::mutate(
+        x = suppressWarnings(as.numeric(.data$x)),
+        y = suppressWarnings(as.numeric(.data$y)),
+        id = as.character(.data$deldir_id)
+      ) |>
+      dplyr::filter(is.finite(.data$x), is.finite(.data$y), !is.na(.data$id), nzchar(.data$id)) |>
+      dplyr::distinct(.data$id, .keep_all = TRUE) |>
+      dplyr::distinct(.data$x, .data$y, .keep_all = TRUE)
+
+    if (nrow(in_pts) < 2) {
+      dd$store[[key]] <- NULL
+      return()
+    }
+
+    w <- face_img()$width
+    h <- face_img()$height
+
+    res <- tryCatch(
+      deldir::deldir(
+        x = in_pts$x,
+        y = in_pts$y,
+        rw = c(0, w, 0, h),
+        id = in_pts$id
+      ),
+      error = function(e) e
+    )
+
+    if (inherits(res, "error")) {
+      dd$store[[key]] <- NULL
+      showNotification(paste0("deldir error: ", conditionMessage(res)), type = "error", duration = 3)
+      return()
+    }
+
+    dd$store[[key]] <- list(input_pts = in_pts, res = res)
+  }, ignoreInit = TRUE)
+
+  current_deldir_result <- reactive({
+    key <- current_dd_key()
+    dd$store[[key]]
+  })
+
   # ---- LHS plot --------------------------------------------------------
 
   output$face_for_edit <- renderPlot({
@@ -469,7 +543,7 @@ server <- function(input, output, session) {
       panel_h_px = session$clientData$output_face_for_edit_height
     )
 
-    pts <- aoi_current_face_tbl()
+    pts <- deldir_tibble()
     if (nrow(pts) > 0) {
       points(pts$x, pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
       lbl <- ifelse(is.na(pts$aoi_name) | pts$aoi_name == "", pts$aoi_id, pts$aoi_name)
@@ -477,7 +551,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # ---- RHS plot (unchanged logic) -------------------------------------
+  # ---- RHS plot: face + tessellation + fixations ----------------------
 
   output$face_for_markup <- renderPlot({
     req(face_img())
@@ -488,6 +562,24 @@ server <- function(input, output, session) {
       panel_h_px = session$clientData$output_face_for_markup_height
     )
 
+    # tessellation lines from stored deldir result
+    dd_obj <- current_deldir_result()
+    if (!is.null(dd_obj) && is.list(dd_obj) && !is.null(dd_obj$res)) {
+      segs <- dd_obj$res$dirsgs
+      if (!is.null(segs) && nrow(segs) > 0) {
+        segments(segs$x1, segs$y1, segs$x2, segs$y2, lwd = 3, col = "cyan")
+      }
+
+      # optional: draw AOI centres and label with deldir_id (kept available)
+      in_pts <- dd_obj$input_pts
+      if (!is.null(in_pts) && nrow(in_pts) > 0) {
+        points(in_pts$x, in_pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
+        # leave labels in place (useful for debugging). Remove later if you want.
+        text(in_pts$x, in_pts$y, labels = in_pts$id, pos = 3, cex = 0.9, col = "cyan")
+      }
+    }
+
+    # fixations (existing logic) on top
     if (isTRUE(input$show_fixations)) {
 
       req(fixrep_this_face_mapped())
@@ -526,7 +618,6 @@ server <- function(input, output, session) {
     if (!nzchar(nm)) nm <- NA_character_
 
     new_id <- next_aoi_id_for(subject = subj, face_key = current_face_key())
-
     deldir_id <- if (!is.na(nm) && nzchar(nm)) nm else new_id
 
     aois$centres <- dplyr::bind_rows(
@@ -555,7 +646,7 @@ server <- function(input, output, session) {
       return()
     }
 
-    pts <- aoi_current_face_tbl()
+    pts <- deldir_tibble()
     if (nrow(pts) == 0) return()
 
     x <- input$face_for_edit_dblclick$x
