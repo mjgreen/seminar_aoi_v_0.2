@@ -351,9 +351,6 @@ server <- function(input, output, session) {
     fx[face_col == current_face_key(), , drop = FALSE]
   })
 
-  # Map fixation coords (screen space) -> image space.
-  # IMG_X/IMG_Y are the screen coords of the IMAGE CENTRE.
-  # Therefore: if FIX_X==IMG_X and FIX_Y==IMG_Y, we want (w/2, h/2).
   fixrep_this_face_mapped <- reactive({
     req(fixrep_this_face(), face_img())
 
@@ -389,7 +386,6 @@ server <- function(input, output, session) {
     )
 
     if (isTRUE(input$show_fixations)) {
-      print("foo")
 
       req(fixrep_this_face_mapped())
 
@@ -401,7 +397,7 @@ server <- function(input, output, session) {
 
       ok <- is.finite(fx) & is.finite(fy) & fx >= 0 & fx <= w & fy >= 0 & fy <= h
       if (any(ok)) {
-        points(fx[ok], fy[ok], pch = 16, cex = 0.6)
+        points(fx[ok], fy[ok], pch = 21, cex = 2, bg = "yellow", col = "red", lwd = 4)
       }
     }
   })
