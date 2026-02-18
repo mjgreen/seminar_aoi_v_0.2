@@ -256,9 +256,7 @@ ui <- page_fillable(
               helpText("LHS: click to add AOI centre. Double-click to delete the nearest AOI centre."),
               tags$hr(),
               tags$h5("Debug: AOIs for current face (deldir tibble)"),
-              tableOutput("aoi_debug_tbl"),
-              tags$hr(),
-              downloadButton("download_fix_assign_current", "Download assigned fixations (current face)")
+              tableOutput("aoi_debug_tbl")
             )
           ),
           tags$hr(),
@@ -301,7 +299,17 @@ ui <- page_fillable(
           tableOutput("fix_assign_debug_tbl")
         )
       ),
-      nav_panel("Summary", card_body(tableOutput("fixations_summary")))
+      nav_panel("Summary", card_body(tableOutput("fixations_summary"))),
+      nav_panel(
+        "Downloads",
+        card_body(
+          downloadButton("download_fix_assign_current", "Download assigned fixations (current face)"),
+          tags$hr(),
+          downloadButton("download_fixations_session", "Download annotated fixations (session)"),
+          tags$hr(),
+          downloadButton("download_summary_session", "Download summary (session)")
+        )
+      )
     )
   )
 )
@@ -774,11 +782,11 @@ server <- function(input, output, session) {
 
   # ---- Summary tab -----------------------------------------------------
 
-  output$fixations_summary <- renderTable({
+  summary_tbl <- reactive({
     x <- session_ann$all
-    if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) return(NULL)
+    if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) return(tibble::tibble())
 
-    out <- x |>
+    x |>
       dplyr::mutate(
         AOI_LABEL = dplyr::if_else(!is.na(.data$AOI_NAME) & nzchar(.data$AOI_NAME),
                                    .data$AOI_NAME,
@@ -791,9 +799,43 @@ server <- function(input, output, session) {
         .groups = "drop"
       ) |>
       dplyr::arrange(.data$SUBJECT, .data$FACE, .data$AOI_LABEL)
-
-    format_table_int(out)
   })
+
+  output$fixations_summary <- renderTable({
+    x <- summary_tbl()
+    if (nrow(x) == 0) return(NULL)
+    format_table_int(x)
+  })
+
+  # ---- Downloads tab ---------------------------------------------------
+
+  output$download_fixations_session <- downloadHandler(
+    filename = function() {
+      paste0("fixations_annotated_session_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      x <- session_ann$all
+      if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) {
+        readr::write_csv(tibble::tibble(message = "No session annotations yet. Commit at least one face."), file)
+      } else {
+        readr::write_csv(x, file)
+      }
+    }
+  )
+
+  output$download_summary_session <- downloadHandler(
+    filename = function() {
+      paste0("fixations_summary_session_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      x <- summary_tbl()
+      if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) {
+        readr::write_csv(tibble::tibble(message = "No summary yet. Commit at least one face."), file)
+      } else {
+        readr::write_csv(x, file)
+      }
+    }
+  )
 
   # ---- LHS plot --------------------------------------------------------
 
