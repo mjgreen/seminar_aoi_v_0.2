@@ -208,10 +208,24 @@ ui <- page_fillable(
                 label = "AOI name (optional, applies to the next click)",
                 placeholder = "e.g., left_eye"
               ),
-              helpText("LHS: click to add AOI centre (uses the optional name above). Double-click to delete the nearest AOI centre."),
+              fluidRow(
+                column(
+                  6,
+                  actionButton("finalize_aois", "Finalize AOIs for this face", class = "btn-primary")
+                ),
+                column(
+                  6,
+                  uiOutput("finalize_status_ui")
+                )
+              ),
+              helpText("LHS: click to add AOI centre. Double-click to delete the nearest AOI centre."),
               tags$hr(),
               tags$h5("Debug: AOIs for current face (deldir tibble)"),
-              tableOutput("aoi_debug_tbl")
+              tableOutput("aoi_debug_tbl"),
+              tags$hr(),
+              tags$h5("Debug: Fixations assigned (current face)"),
+              tableOutput("fix_assign_debug_tbl"),
+              downloadButton("download_fix_assign_current", "Download assigned fixations (current face)")
             )
           ),
           tags$hr(),
@@ -254,7 +268,6 @@ ui <- page_fillable(
 server <- function(input, output, session) {
 
   # ---- AOI centre state ------------------------------------------------
-  # Store ALL AOIs across faces/subjects; aoi_id is a character and unique per (SUBJECT, face_key)
   aois <- reactiveValues(
     centres = tibble::tibble(
       subject = character(),
@@ -267,12 +280,17 @@ server <- function(input, output, session) {
     )
   )
 
-  # per-(subject,face) integer counter used to generate aoi_id like "AOI_001"
   aoi_seq <- reactiveValues(n = tibble::tibble(subject = character(), face_key = character(), next_n = integer()))
 
   # ---- deldir storage (keyed by subject|face_key) -----------------------
   dd <- reactiveValues(
     store = list() # each element: list(input_pts = tibble, res = deldir_object)
+  )
+
+  # ---- assignment storage (keyed by subject|face_key) -------------------
+  assign <- reactiveValues(
+    store = list(),     # each element: assigned fixation tibble
+    finalized = list()  # key -> TRUE/FALSE (for status)
   )
 
   # ---- Fixation report -------------------------------------------------
@@ -378,8 +396,6 @@ server <- function(input, output, session) {
     tolower(trimws(nm))
   })
 
-  # ---- Current subject for this face -----------------------------------
-  # We define "current subject" as the first SUBJECT in the fixrep rows that match this face.
   current_subject <- reactive({
     req(fixrep(), current_face_key())
     fx <- fixrep()
@@ -390,7 +406,6 @@ server <- function(input, output, session) {
     as.character(subj[1])
   })
 
-  # key for deldir store
   current_dd_key <- reactive({
     req(current_face_key())
     subj <- current_subject()
@@ -402,7 +417,6 @@ server <- function(input, output, session) {
 
   fixrep_this_face <- reactive({
     req(fixrep(), current_face_key())
-
     fx <- fixrep()
     face_col <- tolower(trimws(basename(as.character(fx$FACE))))
     fx[face_col == current_face_key(), , drop = FALSE]
@@ -435,7 +449,6 @@ server <- function(input, output, session) {
       y >= 0 && y <= img$height
   }
 
-  # deldir tibble (your term): AOIs for current face/subject
   deldir_tibble <- reactive({
     req(current_face_key())
     subj <- current_subject()
@@ -451,7 +464,6 @@ server <- function(input, output, session) {
     deldir_tibble()
   })
 
-  # Get (and increment) the next AOI sequence number for this (subject, face_key)
   next_aoi_id_for <- function(subject, face_key) {
     if (is.na(subject) || !nzchar(subject)) subject <- "UNKNOWN_SUBJECT"
     if (is.na(face_key) || !nzchar(face_key)) face_key <- "UNKNOWN_FACE"
@@ -471,25 +483,37 @@ server <- function(input, output, session) {
     sprintf("AOI_%03d", n_now)
   }
 
+  # ---- Invalidate "finalized" if AOIs change for this key --------------
+  observeEvent(list(deldir_tibble(), current_dd_key()), {
+    key <- current_dd_key()
+    assign$finalized[[key]] <- FALSE
+    assign$store[[key]] <- NULL
+  }, ignoreInit = TRUE)
+
+  output$finalize_status_ui <- renderUI({
+    req(current_dd_key())
+    key <- current_dd_key()
+    is_done <- isTRUE(assign$finalized[[key]])
+    cls <- if (is_done) "alert alert-success" else "alert alert-warning"
+    txt <- if (is_done) "Finalized: YES" else "Finalized: NO"
+    tags$div(class = cls, txt)
+  })
+
   # ---- Compute + store deldir each time deldir tibble changes ----------
   observeEvent(list(deldir_tibble(), face_img(), current_dd_key()), {
     key <- current_dd_key()
 
-    # If deldir isn't installed, store NULL and do nothing else
     if (!requireNamespace("deldir", quietly = TRUE)) {
       dd$store[[key]] <- NULL
       return()
     }
 
     pts <- deldir_tibble()
-
-    # Only need 2+ AOIs per your rule
     if (nrow(pts) < 2) {
       dd$store[[key]] <- NULL
       return()
     }
 
-    # Prepare input pts for deldir: x/y numeric + id = deldir_id
     in_pts <- pts |>
       dplyr::mutate(
         x = suppressWarnings(as.numeric(.data$x)),
@@ -532,6 +556,94 @@ server <- function(input, output, session) {
     dd$store[[key]]
   })
 
+  # ---- Finalize: assign fixations to nearest AOI centre ----------------
+  observeEvent(input$finalize_aois, {
+    req(face_img(), current_dd_key())
+
+    key <- current_dd_key()
+
+    dd_obj <- dd$store[[key]]
+    if (is.null(dd_obj) || is.null(dd_obj$input_pts) || nrow(dd_obj$input_pts) < 2) {
+      showNotification("Need at least 2 AOI centres (and a valid tessellation) before finalizing.", type = "message", duration = 2.5)
+      return()
+    }
+
+    fx <- fixrep_this_face_mapped()
+    if (is.null(fx) || nrow(fx) == 0) {
+      showNotification("No fixations found for the current face.", type = "message", duration = 2.5)
+      return()
+    }
+
+    w <- face_img()$width
+    h <- face_img()$height
+
+    ok <- is.finite(fx$FIX_X_IMG) & is.finite(fx$FIX_Y_IMG) &
+      fx$FIX_X_IMG >= 0 & fx$FIX_X_IMG <= w &
+      fx$FIX_Y_IMG >= 0 & fx$FIX_Y_IMG <= h
+
+    fx_ok <- fx[ok, , drop = FALSE]
+    if (nrow(fx_ok) == 0) {
+      showNotification("No in-bounds fixations to assign for this face.", type = "message", duration = 2.5)
+      return()
+    }
+
+    centres <- dd_obj$input_pts |>
+      dplyr::select(id, x, y) |>
+      tibble::as_tibble()
+
+    # Assign each fixation to nearest centre (Voronoi equivalence)
+    assign_one <- function(px, py, centres) {
+      d2 <- (centres$x - px)^2 + (centres$y - py)^2
+      centres$id[which.min(d2)]
+    }
+
+    assigned_id <- vapply(
+      seq_len(nrow(fx_ok)),
+      function(i) assign_one(fx_ok$FIX_X_IMG[i], fx_ok$FIX_Y_IMG[i], centres),
+      character(1)
+    )
+
+    out <- fx_ok |>
+      dplyr::mutate(AOI_ASSIGNED = assigned_id) |>
+      dplyr::select(SUBJECT, FACE, TRIAL_ID, CONDITION,
+                    FIX_X, FIX_Y, FIX_DUR,
+                    IMG_X, IMG_Y,
+                    FIX_X_IMG, FIX_Y_IMG,
+                    AOI_ASSIGNED)
+
+    assign$store[[key]] <- tibble::as_tibble(out)
+    assign$finalized[[key]] <- TRUE
+
+    showNotification("Assigned fixations to AOIs for the current face.", type = "message", duration = 2)
+  })
+
+  assigned_fixations_current <- reactive({
+    req(current_dd_key())
+    key <- current_dd_key()
+    assign$store[[key]]
+  })
+
+  output$fix_assign_debug_tbl <- renderTable({
+    x <- assigned_fixations_current()
+    if (is.null(x)) return(NULL)
+    head(x, 50)
+  })
+
+  output$download_fix_assign_current <- downloadHandler(
+    filename = function() {
+      req(current_face_key())
+      paste0("fixations_assigned_", gsub("[^a-zA-Z0-9]+", "_", current_face_key()), ".csv")
+    },
+    content = function(file) {
+      x <- assigned_fixations_current()
+      if (is.null(x)) {
+        readr::write_csv(tibble::tibble(message = "No assignments yet. Click 'Finalize AOIs for this face' first."), file)
+      } else {
+        readr::write_csv(x, file)
+      }
+    }
+  )
+
   # ---- LHS plot --------------------------------------------------------
 
   output$face_for_edit <- renderPlot({
@@ -551,7 +663,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # ---- RHS plot: face + tessellation + fixations ----------------------
+  # ---- RHS plot: face + fixations + tessellation (on top) --------------
 
   output$face_for_markup <- renderPlot({
     req(face_img())
@@ -562,24 +674,7 @@ server <- function(input, output, session) {
       panel_h_px = session$clientData$output_face_for_markup_height
     )
 
-    # tessellation lines from stored deldir result
-    dd_obj <- current_deldir_result()
-    if (!is.null(dd_obj) && is.list(dd_obj) && !is.null(dd_obj$res)) {
-      segs <- dd_obj$res$dirsgs
-      if (!is.null(segs) && nrow(segs) > 0) {
-        segments(segs$x1, segs$y1, segs$x2, segs$y2, lwd = 3, col = "cyan")
-      }
-
-      # optional: draw AOI centres and label with deldir_id (kept available)
-      in_pts <- dd_obj$input_pts
-      if (!is.null(in_pts) && nrow(in_pts) > 0) {
-        points(in_pts$x, in_pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
-        # leave labels in place (useful for debugging). Remove later if you want.
-        text(in_pts$x, in_pts$y, labels = in_pts$id, pos = 3, cex = 0.9, col = "cyan")
-      }
-    }
-
-    # fixations (existing logic) on top
+    # fixations first
     if (isTRUE(input$show_fixations)) {
 
       req(fixrep_this_face_mapped())
@@ -593,6 +688,21 @@ server <- function(input, output, session) {
       ok <- is.finite(fx) & is.finite(fy) & fx >= 0 & fx <= w & fy >= 0 & fy <= h
       if (any(ok)) {
         points(fx[ok], fy[ok], pch = 21, cex = 2, bg = "yellow", col = "red", lwd = 4)
+      }
+    }
+
+    # tessellation ON TOP of fixations
+    dd_obj <- current_deldir_result()
+    if (!is.null(dd_obj) && is.list(dd_obj) && !is.null(dd_obj$res)) {
+      segs <- dd_obj$res$dirsgs
+      if (!is.null(segs) && nrow(segs) > 0) {
+        segments(segs$x1, segs$y1, segs$x2, segs$y2, lwd = 3, col = "cyan")
+      }
+
+      in_pts <- dd_obj$input_pts
+      if (!is.null(in_pts) && nrow(in_pts) > 0) {
+        points(in_pts$x, in_pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
+        text(in_pts$x, in_pts$y, labels = in_pts$id, pos = 3, cex = 0.9, col = "cyan")
       }
     }
   })
