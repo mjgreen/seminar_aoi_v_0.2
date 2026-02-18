@@ -7,8 +7,6 @@ library(png)
 
 # ---- read_fixrep  -----------------------------------------------------
 
-# ---- read_fixrep  -----------------------------------------------------
-
 read_fixrep <- function(path) {
   stopifnot(length(path) == 1, is.character(path), file.exists(path))
 
@@ -68,13 +66,11 @@ read_fixrep <- function(path) {
 
   raw <- res$data
 
-  # --- Normalise column names -----------------------------------------
   nm <- names(raw)
   nm <- stringr::str_replace_all(nm, "\uFEFF", "")
   nm <- stringr::str_trim(nm)
   names(raw) <- nm
 
-  # --- Parse location_b1 "(x, y)" -> image_location_x / image_location_y
   if ("location_b1" %in% names(raw)) {
     loc <- raw$location_b1 |>
       as.character() |>
@@ -85,7 +81,6 @@ read_fixrep <- function(path) {
     raw$image_location_y <- suppressWarnings(as.numeric(stringr::str_trim(loc[, 2])))
   }
 
-  # --- Convert key numeric columns + standardise fixation names ----------
   out <- raw
 
   if ("RECORDING_SESSION_LABEL" %in% names(out)) {
@@ -119,8 +114,6 @@ read_fixrep <- function(path) {
   out
 }
 
-
-
 # ---- Image helpers ------------------------------------------------------
 
 read_image_native <- function(path) {
@@ -140,14 +133,12 @@ read_image_native <- function(path) {
   )
 }
 
-
 # ---- Plot native image ----------------------------------------------------------
 
 plot_native_image_fit <- function(img_obj, panel_w_px, panel_h_px) {
   w_img <- img_obj$width
   h_img <- img_obj$height
 
-  # Fallback if Shiny hasn't reported panel size yet
   if (is.null(panel_w_px) || is.null(panel_h_px) || panel_w_px <= 0 || panel_h_px <= 0) {
     panel_w_px <- w_img
     panel_h_px <- h_img
@@ -156,15 +147,12 @@ plot_native_image_fit <- function(img_obj, panel_w_px, panel_h_px) {
   ar_img <- w_img / h_img
   ar_panel <- panel_w_px / panel_h_px
 
-  # Compute plot limits in IMAGE UNITS so the image "contains" inside the panel
   if (ar_panel > ar_img) {
-    # Panel is wider than image -> pad X
     w_view <- h_img * ar_panel
     xpad <- (w_view - w_img) / 2
     xlim <- c(-xpad, w_img + xpad)
     ylim <- c(h_img, 0)
   } else {
-    # Panel is taller than image -> pad Y
     h_view <- w_img / ar_panel
     ypad <- (h_view - h_img) / 2
     xlim <- c(0, w_img)
@@ -213,7 +201,7 @@ ui <- page_fillable(
                 "Upload face image",
                 accept = c(".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp")
               ),
-              uiOutput("fixations_showhide_ui"),
+              uiOutput("fixations_showhide_ui")
             )
           ),
           tags$hr(),
@@ -270,7 +258,6 @@ server <- function(input, output, session) {
       paste0("Loaded as: ", mode)
     )
   })
-
 
   output$fixrep_mapping_ui <- renderUI({
     req(fixrep_raw())
@@ -333,18 +320,12 @@ server <- function(input, output, session) {
   })
 
   output$fixations_showhide_ui <- renderUI({
-    req(fixrep_raw())
-    radioButtons(
+    checkboxInput(
       inputId = "show_fixations",
-      label = "Fixations",
-      choices = c("Show" = TRUE, "Hide" = FALSE),
-      selected = TRUE,
-      inline = TRUE
+      label = "Show fixations",
+      value = TRUE
     )
   })
-
-
-  # ---- Face image -------------------------------------------------------
 
   face_ready <- reactive({
     !is.null(input$upload_face) && nzchar(input$upload_face$datapath)
@@ -353,6 +334,40 @@ server <- function(input, output, session) {
   face_img <- reactive({
     req(face_ready())
     read_image_native(input$upload_face$datapath)
+  })
+
+  current_face_key <- reactive({
+    req(input$upload_face)
+    nm <- input$upload_face$name
+    nm <- basename(nm)
+    tolower(trimws(nm))
+  })
+
+  fixrep_this_face <- reactive({
+    req(fixrep(), current_face_key())
+
+    fx <- fixrep()
+    face_col <- tolower(trimws(basename(as.character(fx$FACE))))
+    fx[face_col == current_face_key(), , drop = FALSE]
+  })
+
+  # Map fixation coords (screen space) -> image space.
+  # IMG_X/IMG_Y are the screen coords of the IMAGE CENTRE.
+  # Therefore: if FIX_X==IMG_X and FIX_Y==IMG_Y, we want (w/2, h/2).
+  fixrep_this_face_mapped <- reactive({
+    req(fixrep_this_face(), face_img())
+
+    fx <- fixrep_this_face()
+    w <- face_img()$width
+    h <- face_img()$height
+
+    img_left <- fx$IMG_X - (w / 2)
+    img_top  <- fx$IMG_Y - (h / 2)
+
+    fx$FIX_X_IMG <- fx$FIX_X - img_left
+    fx$FIX_Y_IMG <- fx$FIX_Y - img_top
+
+    fx
   })
 
   output$face_for_edit <- renderPlot({
@@ -367,29 +382,29 @@ server <- function(input, output, session) {
   output$face_for_markup <- renderPlot({
     req(face_img())
 
-    # Base layer: image (with padding to fit the panel)
     plot_native_image_fit(
       face_img(),
       panel_w_px = session$clientData$output_face_for_markup_width,
       panel_h_px = session$clientData$output_face_for_markup_height
     )
 
-    # Overlay: fixations (only if toggle is TRUE and fixrep is available)
     if (isTRUE(input$show_fixations)) {
-      req(fixrep())
+      print("foo")
 
-      fx <- fixrep()$FIX_X
-      fy <- fixrep()$FIX_Y
+      req(fixrep_this_face_mapped())
 
-      ok <- is.finite(fx) & is.finite(fy)
+      w <- face_img()$width
+      h <- face_img()$height
+
+      fx <- fixrep_this_face_mapped()$FIX_X_IMG
+      fy <- fixrep_this_face_mapped()$FIX_Y_IMG
+
+      ok <- is.finite(fx) & is.finite(fy) & fx >= 0 & fx <= w & fy >= 0 & fy <= h
       if (any(ok)) {
         points(fx[ok], fy[ok], pch = 16, cex = 0.6)
       }
     }
   })
-
-
-  # ---- Click gating -----------------------------------------------------
 
   click_on_image <- function(click, img) {
     if (is.null(click) || is.null(img)) return(FALSE)
@@ -427,8 +442,6 @@ server <- function(input, output, session) {
 
     # Your AOI-doubleclick logic goes here
   })
-
-  # ---- Exit app ---------------------------------------------------------
 
   observeEvent(input$exit_app, {
     if (interactive()) {
