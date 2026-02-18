@@ -218,6 +218,16 @@ ui <- page_fillable(
                   uiOutput("finalize_status_ui")
                 )
               ),
+              fluidRow(
+                column(
+                  6,
+                  actionButton("commit_next_face", "Next face (commit this face)", class = "btn-success")
+                ),
+                column(
+                  6,
+                  uiOutput("commit_status_ui")
+                )
+              ),
               helpText("LHS: click to add AOI centre. Double-click to delete the nearest AOI centre."),
               tags$hr(),
               tags$h5("Debug: AOIs for current face (deldir tibble)"),
@@ -297,6 +307,12 @@ server <- function(input, output, session) {
   assign <- reactiveValues(
     store = list(),     # each element: assigned fixation tibble
     finalized = list()  # key -> TRUE/FALSE (for status)
+  )
+
+  # ---- session-level annotation store (committed faces) -----------------
+  session_ann <- reactiveValues(
+    all = tibble::tibble(),   # committed assigned fixations across faces
+    committed = list()        # key -> TRUE/FALSE
   )
 
   # ---- Fixation report -------------------------------------------------
@@ -505,6 +521,15 @@ server <- function(input, output, session) {
     tags$div(class = cls, txt)
   })
 
+  output$commit_status_ui <- renderUI({
+    req(current_dd_key())
+    key <- current_dd_key()
+    is_done <- isTRUE(session_ann$committed[[key]])
+    cls <- if (is_done) "alert alert-success" else "alert alert-warning"
+    txt <- if (is_done) "Committed: YES" else "Committed: NO"
+    tags$div(class = cls, txt)
+  })
+
   # ---- Compute + store deldir each time deldir tibble changes ----------
   observeEvent(list(deldir_tibble(), face_img(), current_dd_key()), {
     key <- current_dd_key()
@@ -623,6 +648,47 @@ server <- function(input, output, session) {
     showNotification("Assigned fixations to AOIs for the current face.", type = "message", duration = 2)
   })
 
+  # ---- Commit current face into session table --------------------------
+  observeEvent(input$commit_next_face, {
+    req(current_dd_key())
+    key <- current_dd_key()
+
+    if (isTRUE(session_ann$committed[[key]])) {
+      showNotification("This face is already committed to the session table.", type = "message", duration = 2.5)
+      return()
+    }
+
+    if (!isTRUE(assign$finalized[[key]])) {
+      showNotification("Finalize AOIs for this face before moving to the next face.", type = "message", duration = 2.5)
+      return()
+    }
+
+    x <- assign$store[[key]]
+    if (is.null(x) || nrow(x) == 0) {
+      showNotification("No assigned fixations to commit for this face.", type = "message", duration = 2.5)
+      return()
+    }
+
+    # attach AOI metadata (aoi_id / aoi_name) by matching AOI_ASSIGNED to deldir_id
+    pts <- deldir_tibble() |>
+      dplyr::select(aoi_id, aoi_name, deldir_id) |>
+      dplyr::distinct(deldir_id, .keep_all = TRUE)
+
+    x2 <- x |>
+      dplyr::left_join(pts, by = c("AOI_ASSIGNED" = "deldir_id")) |>
+      dplyr::mutate(
+        AOI_ID = .data$aoi_id,
+        AOI_NAME = .data$aoi_name
+      ) |>
+      dplyr::select(-aoi_id, -aoi_name)
+
+    # append to session-level table
+    session_ann$all <- dplyr::bind_rows(session_ann$all, x2)
+    session_ann$committed[[key]] <- TRUE
+
+    showNotification("Committed this face to the session table. Upload the next face to continue.", type = "message", duration = 2.5)
+  })
+
   assigned_fixations_current <- reactive({
     req(current_dd_key())
     key <- current_dd_key()
@@ -649,6 +715,19 @@ server <- function(input, output, session) {
       }
     }
   )
+
+  # ---- Fixations annotated tab: session table --------------------------
+
+  output$fixations_tbl <- DT::renderDT({
+    if (!requireNamespace("DT", quietly = TRUE)) {
+      return(NULL)
+    }
+    DT::datatable(
+      session_ann$all,
+      rownames = FALSE,
+      options = list(pageLength = 25, scrollX = TRUE)
+    )
+  })
 
   # ---- LHS plot --------------------------------------------------------
 
@@ -789,4 +868,3 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
-
