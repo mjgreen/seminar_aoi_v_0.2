@@ -254,17 +254,21 @@ ui <- page_fillable(
 server <- function(input, output, session) {
 
   # ---- AOI centre state ------------------------------------------------
-  # Store ALL AOIs across faces; we'll derive the current-face tibble from this
+  # Store ALL AOIs across faces/subjects; aoi_id is a character and unique per (SUBJECT, face_key)
   aois <- reactiveValues(
     centres = tibble::tibble(
+      subject = character(),
       face_key = character(),
-      aoi_id = integer(),
+      aoi_id = character(),
       aoi_name = character(),
+      deldir_id = character(),
       x = numeric(),
       y = numeric()
     )
   )
-  next_aoi_id <- reactiveVal(1)
+
+  # per-(subject,face) integer counter used to generate aoi_id like "AOI_001"
+  aoi_seq <- reactiveValues(n = tibble::tibble(subject = character(), face_key = character(), next_n = integer()))
 
   # ---- Fixation report -------------------------------------------------
 
@@ -326,7 +330,7 @@ server <- function(input, output, session) {
     raw <- fixrep_raw()
 
     tibble(
-      SUBJECT = raw[[input$map_participant]],
+      SUBJECT = as.character(raw[[input$map_participant]]),
       FACE = as.character(raw[[input$map_face]]),
       TRIAL_ID = raw[[input$map_trial]],
       CONDITION = raw[[input$map_condition]],
@@ -369,6 +373,18 @@ server <- function(input, output, session) {
     tolower(trimws(nm))
   })
 
+  # ---- Current subject for this face -----------------------------------
+  # We define "current subject" as the first SUBJECT in the fixrep rows that match this face.
+  current_subject <- reactive({
+    req(fixrep(), current_face_key())
+    fx <- fixrep()
+    face_col <- tolower(trimws(basename(as.character(fx$FACE))))
+    subj <- fx$SUBJECT[face_col == current_face_key()]
+    subj <- subj[!is.na(subj)]
+    if (length(subj) == 0) return(NA_character_)
+    as.character(subj[1])
+  })
+
   # ---- Fixations for this face ----------------------------------------
 
   fixrep_this_face <- reactive({
@@ -409,9 +425,11 @@ server <- function(input, output, session) {
   # Current-face AOI tibble (this is the record you asked for)
   aoi_current_face_tbl <- reactive({
     req(current_face_key())
+    subj <- current_subject()
     aois$centres |>
-      dplyr::filter(.data$face_key == current_face_key()) |>
-      dplyr::select(aoi_id, aoi_name, x, y) |>
+      dplyr::filter(.data$face_key == current_face_key(),
+                    is.na(subj) | .data$subject == subj) |>
+      dplyr::select(subject, face_key, aoi_id, aoi_name, deldir_id, x, y) |>
       tibble::as_tibble()
   })
 
@@ -419,6 +437,26 @@ server <- function(input, output, session) {
     req(current_face_key())
     aoi_current_face_tbl()
   })
+
+  # Get (and increment) the next AOI sequence number for this (subject, face_key)
+  next_aoi_id_for <- function(subject, face_key) {
+    if (is.na(subject) || !nzchar(subject)) subject <- "UNKNOWN_SUBJECT"
+    if (is.na(face_key) || !nzchar(face_key)) face_key <- "UNKNOWN_FACE"
+
+    idx <- which(aoi_seq$n$subject == subject & aoi_seq$n$face_key == face_key)
+    if (length(idx) == 0) {
+      aoi_seq$n <- dplyr::bind_rows(
+        aoi_seq$n,
+        tibble::tibble(subject = subject, face_key = face_key, next_n = 1L)
+      )
+      idx <- nrow(aoi_seq$n)
+    }
+
+    n_now <- aoi_seq$n$next_n[idx[1]]
+    aoi_seq$n$next_n[idx[1]] <- n_now + 1L
+
+    sprintf("AOI_%03d", n_now)
+  }
 
   # ---- LHS plot --------------------------------------------------------
 
@@ -434,7 +472,7 @@ server <- function(input, output, session) {
     pts <- aoi_current_face_tbl()
     if (nrow(pts) > 0) {
       points(pts$x, pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
-      lbl <- ifelse(is.na(pts$aoi_name) | pts$aoi_name == "", as.character(pts$aoi_id), pts$aoi_name)
+      lbl <- ifelse(is.na(pts$aoi_name) | pts$aoi_name == "", pts$aoi_id, pts$aoi_name)
       text(pts$x, pts$y, labels = lbl, pos = 3, cex = 0.9, col = "cyan")
     }
   })
@@ -467,7 +505,7 @@ server <- function(input, output, session) {
     }
   })
 
-  # ---- LHS click: add centre (with optional name) ----------------------
+  # ---- LHS click: add centre (with optional name + deldir_id) ----------
 
   observeEvent(input$face_for_edit_click, {
     req(face_img(), current_face_key())
@@ -477,6 +515,9 @@ server <- function(input, output, session) {
       return()
     }
 
+    subj <- current_subject()
+    if (is.na(subj) || !nzchar(subj)) subj <- "UNKNOWN_SUBJECT"
+
     x <- input$face_for_edit_click$x
     y <- input$face_for_edit_click$y
 
@@ -484,12 +525,21 @@ server <- function(input, output, session) {
     nm <- if (is.null(nm)) "" else trimws(as.character(nm))
     if (!nzchar(nm)) nm <- NA_character_
 
-    id <- next_aoi_id()
-    next_aoi_id(id + 1)
+    new_id <- next_aoi_id_for(subject = subj, face_key = current_face_key())
+
+    deldir_id <- if (!is.na(nm) && nzchar(nm)) nm else new_id
 
     aois$centres <- dplyr::bind_rows(
       aois$centres,
-      tibble::tibble(face_key = current_face_key(), aoi_id = id, aoi_name = nm, x = x, y = y)
+      tibble::tibble(
+        subject = subj,
+        face_key = current_face_key(),
+        aoi_id = new_id,
+        aoi_name = nm,
+        deldir_id = deldir_id,
+        x = x,
+        y = y
+      )
     )
 
     updateTextInput(session, "aoi_name_next", value = "")
@@ -515,9 +565,11 @@ server <- function(input, output, session) {
     i <- which.min(d2)
 
     delete_id <- pts$aoi_id[i]
+    delete_subject <- pts$subject[i]
+    delete_face <- pts$face_key[i]
 
     aois$centres <- aois$centres |>
-      dplyr::filter(!(face_key == current_face_key() & aoi_id == delete_id))
+      dplyr::filter(!(subject == delete_subject & face_key == delete_face & aoi_id == delete_id))
   })
 
   observeEvent(input$exit_app, {
