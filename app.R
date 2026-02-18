@@ -208,7 +208,10 @@ ui <- page_fillable(
                 label = "AOI name (optional, applies to the next click)",
                 placeholder = "e.g., left_eye"
               ),
-              helpText("LHS: click to add AOI centre (uses the optional name above). Double-click to delete the nearest AOI centre.")
+              helpText("LHS: click to add AOI centre (uses the optional name above). Double-click to delete the nearest AOI centre."),
+              tags$hr(),
+              tags$h5("Debug: AOIs for current face"),
+              tableOutput("aoi_debug_tbl")
             )
           ),
           tags$hr(),
@@ -251,6 +254,7 @@ ui <- page_fillable(
 server <- function(input, output, session) {
 
   # ---- AOI centre state ------------------------------------------------
+  # Store ALL AOIs across faces; we'll derive the current-face tibble from this
   aois <- reactiveValues(
     centres = tibble::tibble(
       face_key = character(),
@@ -402,10 +406,18 @@ server <- function(input, output, session) {
       y >= 0 && y <= img$height
   }
 
-  aois_this_face <- reactive({
+  # Current-face AOI tibble (this is the record you asked for)
+  aoi_current_face_tbl <- reactive({
     req(current_face_key())
     aois$centres |>
-      dplyr::filter(.data$face_key == current_face_key())
+      dplyr::filter(.data$face_key == current_face_key()) |>
+      dplyr::select(aoi_id, aoi_name, x, y) |>
+      tibble::as_tibble()
+  })
+
+  output$aoi_debug_tbl <- renderTable({
+    req(current_face_key())
+    aoi_current_face_tbl()
   })
 
   # ---- LHS plot --------------------------------------------------------
@@ -419,7 +431,7 @@ server <- function(input, output, session) {
       panel_h_px = session$clientData$output_face_for_edit_height
     )
 
-    pts <- aois_this_face()
+    pts <- aoi_current_face_tbl()
     if (nrow(pts) > 0) {
       points(pts$x, pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
       lbl <- ifelse(is.na(pts$aoi_name) | pts$aoi_name == "", as.character(pts$aoi_id), pts$aoi_name)
@@ -480,7 +492,6 @@ server <- function(input, output, session) {
       tibble::tibble(face_key = current_face_key(), aoi_id = id, aoi_name = nm, x = x, y = y)
     )
 
-    # clear after use so it applies to "the AOI they just clicked"
     updateTextInput(session, "aoi_name_next", value = "")
   })
 
@@ -494,7 +505,7 @@ server <- function(input, output, session) {
       return()
     }
 
-    pts <- aois_this_face()
+    pts <- aoi_current_face_tbl()
     if (nrow(pts) == 0) return()
 
     x <- input$face_for_edit_dblclick$x
