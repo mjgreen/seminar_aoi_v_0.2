@@ -5,6 +5,14 @@ library(tibble)
 library(magick)
 library(png)
 
+# ---- Table formatting helpers -----------------------------------------
+
+format_table_int <- function(df) {
+  if (is.null(df)) return(df)
+  df <- tibble::as_tibble(df)
+  df |> dplyr::mutate(dplyr::across(dplyr::where(is.numeric), ~ round(.x, 0)))
+}
+
 # ---- read_fixrep  -----------------------------------------------------
 
 read_fixrep <- function(path) {
@@ -174,6 +182,13 @@ plot_native_image_fit <- function(img_obj, panel_w_px, panel_h_px) {
 }
 
 ui <- page_fillable(
+  tags$head(
+    tags$style(HTML("
+      /* Smaller text for base Shiny tables + DT tables */
+      .table, table, .shiny-table, .shiny-table table { font-size: 85%; }
+      .dataTables_wrapper { font-size: 85%; }
+    "))
+  ),
   layout_columns(
     col_widths = c(4, 8),
 
@@ -399,7 +414,7 @@ server <- function(input, output, session) {
   })
 
   output$fixrep_preview <- renderTable({
-    head(fixrep(), 5)
+    format_table_int(head(fixrep(), 5))
   })
 
   output$fixations_showhide_ui <- renderUI({
@@ -493,7 +508,7 @@ server <- function(input, output, session) {
 
   output$aoi_debug_tbl <- renderTable({
     req(current_face_key())
-    deldir_tibble()
+    format_table_int(deldir_tibble())
   })
 
   next_aoi_id_for <- function(subject, face_key) {
@@ -704,7 +719,7 @@ server <- function(input, output, session) {
     showNotification("Committed this face to the session table. Upload the next face to continue.", type = "message", duration = 2.5)
   })
 
-  # ---- Reset session annotations (Step 5) ------------------------------
+  # ---- Reset session annotations ---------------------------------------
   observeEvent(input$reset_session, {
     session_ann$all <- tibble::tibble()
     session_ann$committed <- list()
@@ -720,7 +735,7 @@ server <- function(input, output, session) {
   output$fix_assign_debug_tbl <- renderTable({
     x <- assigned_fixations_current()
     if (is.null(x)) return(NULL)
-    head(x, 50)
+    format_table_int(head(x, 50))
   })
 
   output$download_fix_assign_current <- downloadHandler(
@@ -741,23 +756,29 @@ server <- function(input, output, session) {
   # ---- Fixations annotated tab: session table --------------------------
 
   output$fixations_tbl <- DT::renderDT({
-    if (!requireNamespace("DT", quietly = TRUE)) {
-      return(NULL)
-    }
-    DT::datatable(
-      session_ann$all,
+    if (!requireNamespace("DT", quietly = TRUE)) return(NULL)
+
+    df <- session_ann$all
+    dt <- DT::datatable(
+      df,
       rownames = FALSE,
       options = list(pageLength = 25, scrollX = TRUE)
     )
+
+    num_cols <- names(df)[vapply(df, is.numeric, logical(1))]
+    if (length(num_cols) > 0) {
+      dt <- DT::formatRound(dt, columns = num_cols, digits = 0)
+    }
+    dt
   })
 
-  # ---- Summary tab (Step 4) -------------------------------------------
+  # ---- Summary tab -----------------------------------------------------
 
   output$fixations_summary <- renderTable({
     x <- session_ann$all
     if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) return(NULL)
 
-    x |>
+    out <- x |>
       dplyr::mutate(
         AOI_LABEL = dplyr::if_else(!is.na(.data$AOI_NAME) & nzchar(.data$AOI_NAME),
                                    .data$AOI_NAME,
@@ -770,6 +791,8 @@ server <- function(input, output, session) {
         .groups = "drop"
       ) |>
       dplyr::arrange(.data$SUBJECT, .data$FACE, .data$AOI_LABEL)
+
+    format_table_int(out)
   })
 
   # ---- LHS plot --------------------------------------------------------
