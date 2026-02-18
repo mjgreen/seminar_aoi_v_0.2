@@ -28,7 +28,7 @@ read_fixrep <- function(path) {
 
   read_as_text <- function(path) {
     first_line <- readLines(path, n = 1, warn = FALSE)
-    n_tabs   <- stringr::str_count(first_line, "\t")
+    n_tabs <- stringr::str_count(first_line, "\t")
     n_commas <- stringr::str_count(first_line, ",")
 
     delim <- if (n_tabs >= n_commas) "\t" else ","
@@ -286,6 +286,8 @@ ui <- page_fillable(
 
       nav_panel("Summary", card_body(tableOutput("fixations_summary"))),
 
+      nav_panel("Grand means", card_body(tableOutput("grand_means_tbl"))),
+
       nav_panel(
         "Downloads",
         card_body(
@@ -293,7 +295,9 @@ ui <- page_fillable(
           tags$hr(),
           downloadButton("download_fixations_session", "Download annotated fixations (session)"),
           tags$hr(),
-          downloadButton("download_summary_session", "Download summary (session)")
+          downloadButton("download_summary_session", "Download summary (session)"),
+          tags$hr(),
+          downloadButton("download_grand_means_session", "Download grand means (session)")
         )
       )
     )
@@ -362,7 +366,7 @@ server <- function(input, output, session) {
         "map_face", "FACE", choices = cols,
         selected = dplyr::case_when(
           "which_face" %in% cols ~ "which_face",
-          "file_b1"    %in% cols ~ "file_b1",
+          "file_b1" %in% cols ~ "file_b1",
           TRUE ~ cols[1]
         )
       ),
@@ -471,7 +475,7 @@ server <- function(input, output, session) {
     h <- face_img()$height
 
     img_left <- fx$IMG_X - (w / 2)
-    img_top  <- fx$IMG_Y - (h / 2)
+    img_top <- fx$IMG_Y - (h / 2)
 
     fx$FIX_X_IMG <- fx$FIX_X - img_left
     fx$FIX_Y_IMG <- fx$FIX_Y - img_top
@@ -500,7 +504,6 @@ server <- function(input, output, session) {
       tibble::as_tibble()
   })
 
-  # Display as integers (digits=0) but keep underlying numeric values
   output$aoi_debug_tbl <- renderTable({
     req(current_face_key())
     deldir_tibble()
@@ -663,11 +666,13 @@ server <- function(input, output, session) {
 
     out <- fx_ok |>
       dplyr::mutate(AOI_ASSIGNED = assigned_id) |>
-      dplyr::select(SUBJECT, FACE, TRIAL_ID, CONDITION,
-                    FIX_X, FIX_Y, FIX_DUR,
-                    IMG_X, IMG_Y,
-                    FIX_X_IMG, FIX_Y_IMG,
-                    AOI_ASSIGNED)
+      dplyr::select(
+        SUBJECT, FACE, TRIAL_ID, CONDITION,
+        FIX_X, FIX_Y, FIX_DUR,
+        IMG_X, IMG_Y,
+        FIX_X_IMG, FIX_Y_IMG,
+        AOI_ASSIGNED
+      )
 
     assign$store[[key]] <- tibble::as_tibble(out)
     assign$finalized[[key]] <- TRUE
@@ -714,8 +719,23 @@ server <- function(input, output, session) {
     showNotification("Committed this face to the session table. Upload the next face to continue.", type = "message", duration = 2.5)
   })
 
-  # ---- Reset session annotations ---------------------------------------
+  # ---- Guarded reset (confirm modal) -----------------------------------
   observeEvent(input$reset_session, {
+    showModal(
+      modalDialog(
+        title = "Reset session annotations?",
+        "This will permanently clear all committed face annotations in this session (and the summary / grand means).",
+        easyClose = TRUE,
+        footer = tagList(
+          modalButton("Cancel"),
+          actionButton("confirm_reset_session", "Yes, reset", class = "btn-danger")
+        )
+      )
+    )
+  })
+
+  observeEvent(input$confirm_reset_session, {
+    removeModal()
     session_ann$all <- tibble::tibble()
     session_ann$committed <- list()
     showNotification("Session annotations cleared.", type = "message", duration = 2)
@@ -727,7 +747,6 @@ server <- function(input, output, session) {
     assign$store[[key]]
   })
 
-  # Display as integers (digits=0) but keep underlying numeric values
   output$fix_assign_debug_tbl <- renderTable({
     x <- assigned_fixations_current()
     if (is.null(x)) return(NULL)
@@ -768,7 +787,7 @@ server <- function(input, output, session) {
     dt
   })
 
-  # ---- Summary tab -----------------------------------------------------
+  # ---- Summary tab (row per subject-face-aoi) ---------------------------
 
   summary_tbl <- reactive({
     x <- session_ann$all
@@ -776,9 +795,11 @@ server <- function(input, output, session) {
 
     x |>
       dplyr::mutate(
-        AOI_LABEL = dplyr::if_else(!is.na(.data$AOI_NAME) & nzchar(.data$AOI_NAME),
-                                   .data$AOI_NAME,
-                                   .data$AOI_ID)
+        AOI_LABEL = dplyr::if_else(
+          !is.na(.data$AOI_NAME) & nzchar(.data$AOI_NAME),
+          .data$AOI_NAME,
+          .data$AOI_ID
+        )
       ) |>
       dplyr::group_by(.data$SUBJECT, .data$FACE, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
       dplyr::summarise(
@@ -789,9 +810,30 @@ server <- function(input, output, session) {
       dplyr::arrange(.data$SUBJECT, .data$FACE, .data$AOI_LABEL)
   })
 
-  # Display as integers (digits=0) but keep underlying numeric values
   output$fixations_summary <- renderTable({
     x <- summary_tbl()
+    if (nrow(x) == 0) return(NULL)
+    x
+  }, digits = 0)
+
+  # ---- Grand means tab (row per face-aoi; aggregated over subjects) -----
+
+  grand_means_tbl <- reactive({
+    s <- summary_tbl()
+    if (is.null(s) || !is.data.frame(s) || nrow(s) == 0) return(tibble::tibble())
+
+    s |>
+      dplyr::group_by(.data$FACE, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
+      dplyr::summarise(
+        GRAND_MEAN_N_FIX = mean(.data$N_FIX, na.rm = TRUE),
+        GRAND_MEAN_SUM_FIX_DUR = mean(.data$SUM_FIX_DUR, na.rm = TRUE),
+        .groups = "drop"
+      ) |>
+      dplyr::arrange(.data$FACE, .data$AOI_LABEL)
+  })
+
+  output$grand_means_tbl <- renderTable({
+    x <- grand_means_tbl()
     if (nrow(x) == 0) return(NULL)
     x
   }, digits = 0)
@@ -820,6 +862,20 @@ server <- function(input, output, session) {
       x <- summary_tbl()
       if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) {
         readr::write_csv(tibble::tibble(message = "No summary yet. Commit at least one face."), file)
+      } else {
+        readr::write_csv(x, file)
+      }
+    }
+  )
+
+  output$download_grand_means_session <- downloadHandler(
+    filename = function() {
+      paste0("fixations_grand_means_session_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      x <- grand_means_tbl()
+      if (is.null(x) || !is.data.frame(x) || nrow(x) == 0) {
+        readr::write_csv(tibble::tibble(message = "No grand means yet. Commit at least one face (and have a summary)."), file)
       } else {
         readr::write_csv(x, file)
       }
