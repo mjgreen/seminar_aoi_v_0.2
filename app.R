@@ -203,14 +203,7 @@ ui <- page_fillable(
               ),
               uiOutput("fixations_showhide_ui"),
               tags$hr(),
-              radioButtons(
-                inputId = "lhs_mode",
-                label = "LHS mode",
-                choices = c("Navigate (brush-zoom)" = "nav", "Edit AOIs (click/dblclick)" = "edit"),
-                selected = "nav",
-                inline = FALSE
-              ),
-              helpText("Navigate mode: use brush to zoom (and double-click plot to reset). Edit mode: click to add an AOI point; double-click to delete nearest point.")
+              helpText("LHS: click to add AOI centre. Double-click to delete nearest AOI centre.")
             )
           ),
           tags$hr(),
@@ -232,7 +225,6 @@ ui <- page_fillable(
                 "face_for_edit",
                 click = "face_for_edit_click",
                 dblclick = "face_for_edit_dblclick",
-                brush = brushOpts(id = "face_for_edit_brush", resetOnNew = TRUE),
                 height = "70vh"
               )
             ),
@@ -253,10 +245,13 @@ ui <- page_fillable(
 
 server <- function(input, output, session) {
 
-  # ---- AOI state (point AOIs for now) ---------------------------------
-  aois <- reactiveValues(points = tibble::tibble(face_key = character(), aoi_id = integer(), x = numeric(), y = numeric()))
-
+  # ---- AOI centre state ------------------------------------------------
+  aois <- reactiveValues(
+    centres = tibble::tibble(face_key = character(), aoi_id = integer(), x = numeric(), y = numeric())
+  )
   next_aoi_id <- reactiveVal(1)
+
+  # ---- Fixation report -------------------------------------------------
 
   fixrep_raw <- reactive({
     req(input$upload_fixrep)
@@ -341,6 +336,8 @@ server <- function(input, output, session) {
     )
   })
 
+  # ---- Face handling ---------------------------------------------------
+
   face_ready <- reactive({
     !is.null(input$upload_face) && nzchar(input$upload_face$datapath)
   })
@@ -356,6 +353,8 @@ server <- function(input, output, session) {
     nm <- basename(nm)
     tolower(trimws(nm))
   })
+
+  # ---- Fixations for this face ----------------------------------------
 
   fixrep_this_face <- reactive({
     req(fixrep(), current_face_key())
@@ -381,7 +380,7 @@ server <- function(input, output, session) {
     fx
   })
 
-  # ---- Helpers ---------------------------------------------------------
+  # ---- AOI helpers -----------------------------------------------------
 
   click_on_image <- function(click, img) {
     if (is.null(click) || is.null(img)) return(FALSE)
@@ -392,9 +391,9 @@ server <- function(input, output, session) {
       y >= 0 && y <= img$height
   }
 
-  current_face_aois <- reactive({
+  aois_this_face <- reactive({
     req(current_face_key())
-    aois$points |>
+    aois$centres |>
       dplyr::filter(.data$face_key == current_face_key())
   })
 
@@ -409,15 +408,14 @@ server <- function(input, output, session) {
       panel_h_px = session$clientData$output_face_for_edit_height
     )
 
-    # overlay AOI points (for current face)
-    pts <- current_face_aois()
+    pts <- aois_this_face()
     if (nrow(pts) > 0) {
       points(pts$x, pts$y, pch = 4, cex = 2, lwd = 3, col = "cyan")
       text(pts$x, pts$y, labels = pts$aoi_id, pos = 3, cex = 0.9, col = "cyan")
     }
   })
 
-  # ---- RHS plot (unchanged except it now shares the same image draw) ---
+  # ---- RHS plot (unchanged logic) -------------------------------------
 
   output$face_for_markup <- renderPlot({
     req(face_img())
@@ -445,12 +443,10 @@ server <- function(input, output, session) {
     }
   })
 
-  # ---- LHS click/dblclick handlers ------------------------------------
+  # ---- LHS click: add centre ------------------------------------------
 
   observeEvent(input$face_for_edit_click, {
     req(face_img(), current_face_key())
-
-    if (!identical(input$lhs_mode, "edit")) return()
 
     if (!click_on_image(input$face_for_edit_click, face_img())) {
       showNotification("Click on the image (not the padding).", type = "message", duration = 1.5)
@@ -463,41 +459,34 @@ server <- function(input, output, session) {
     id <- next_aoi_id()
     next_aoi_id(id + 1)
 
-    aois$points <- dplyr::bind_rows(
-      aois$points,
+    aois$centres <- dplyr::bind_rows(
+      aois$centres,
       tibble::tibble(face_key = current_face_key(), aoi_id = id, x = x, y = y)
     )
   })
 
+  # ---- LHS double-click: remove nearest centre (no threshold) ----------
+
   observeEvent(input$face_for_edit_dblclick, {
     req(face_img(), current_face_key())
-
-    if (!identical(input$lhs_mode, "edit")) return()
 
     if (!click_on_image(input$face_for_edit_dblclick, face_img())) {
       showNotification("Double-click on the image (not the padding).", type = "message", duration = 1.5)
       return()
     }
 
-    pts <- current_face_aois()
+    pts <- aois_this_face()
     if (nrow(pts) == 0) return()
 
     x <- input$face_for_edit_dblclick$x
     y <- input$face_for_edit_dblclick$y
 
-    # delete nearest point if within threshold
     d2 <- (pts$x - x)^2 + (pts$y - y)^2
-
     i <- which.min(d2)
-    # threshold: ~15px radius (squared)
-    if (!is.finite(d2[i]) || d2[i] > (15^2)) {
-      showNotification("No AOI point close enough to delete (double-click nearer).", type = "message", duration = 1.5)
-      return()
-    }
 
     delete_id <- pts$aoi_id[i]
 
-    aois$points <- aois$points |>
+    aois$centres <- aois$centres |>
       dplyr::filter(!(face_key == current_face_key() & aoi_id == delete_id))
   })
 
