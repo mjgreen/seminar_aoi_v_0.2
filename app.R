@@ -223,8 +223,6 @@ ui <- page_fillable(
               tags$h5("Debug: AOIs for current face (deldir tibble)"),
               tableOutput("aoi_debug_tbl"),
               tags$hr(),
-              tags$h5("Debug: Fixations assigned (current face)"),
-              tableOutput("fix_assign_debug_tbl"),
               downloadButton("download_fix_assign_current", "Download assigned fixations (current face)")
             )
           ),
@@ -259,7 +257,15 @@ ui <- page_fillable(
         )
       ),
 
-      nav_panel("Fixations annotated", card_body(DT::DTOutput("fixations_tbl"))),
+      nav_panel(
+        "Fixations annotated",
+        card_body(
+          DT::DTOutput("fixations_tbl"),
+          tags$hr(),
+          tags$h5("Debug: Fixations assigned (current face)"),
+          tableOutput("fix_assign_debug_tbl")
+        )
+      ),
       nav_panel("Summary", card_body(tableOutput("fixations_summary")))
     )
   )
