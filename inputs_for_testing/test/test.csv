@@ -1,4 +1,0 @@
-RECORDING_SESSION_LABEL,Session_Name,which_face,image_location_x,image_location_y,condition,response,correct_response,accuracy,TRIAL_INDEX,CURRENT_FIX_INDEX,CURRENT_FIX_X,CURRENT_FIX_Y,CURRENT_FIX_DURATION
-1,1,C_M 03.jpg,799,675,bottom,/,/,TRUE,1,1,799,675,139
-1,1,C_M 03.jpg,799,675,bottom,/,/,TRUE,1,1,400,500,139
-1,1,C_M 03.jpg,799,675,bottom,/,/,TRUE,1,1,200,200,139

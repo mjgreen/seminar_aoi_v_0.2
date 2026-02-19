@@ -497,7 +497,7 @@ server <- function(input, output, session) {
           .data$AOI_ID
         )
       ) |>
-      dplyr::group_by(.data$SUBJECT, .data$FACE, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
+      dplyr::group_by(.data$SUBJECT, .data$FACE, .data$CONDITION, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
       dplyr::summarise(
         N_FIX = dplyr::n(),
         SUM_FIX_DUR = sum(.data$FIX_DUR, na.rm = TRUE),
@@ -519,7 +519,7 @@ server <- function(input, output, session) {
     if (is.null(s) || !is.data.frame(s) || nrow(s) == 0) return(tibble::tibble())
 
     s |>
-      dplyr::group_by(.data$FACE, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
+      dplyr::group_by(.data$FACE, .data$CONDITION, .data$AOI_ASSIGNED, .data$AOI_ID, .data$AOI_NAME, .data$AOI_LABEL) |>
       dplyr::summarise(
         GRAND_MEAN_N_FIX = mean(.data$N_FIX, na.rm = TRUE),
         GRAND_MEAN_SUM_FIX_DUR = mean(.data$SUM_FIX_DUR, na.rm = TRUE),
